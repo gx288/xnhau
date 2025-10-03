@@ -337,4 +337,53 @@ def method_selenium_proxy(url, retries=2, delay=5):
 def debug_all_methods(page_num=1):
     """Test all methods with Referer Google."""
     url = DOMAIN if page_num == 1 else f"{DOMAIN}{page_num}/"
-    logger.info(f"=== DEBUGGING PAGE {page_num}: {
+    logger.info(f"=== DEBUGGING PAGE {page_num}: {url} ===")
+    logger.info(f"Environment: Python {os.sys.version}, OS: {os.name}, Working dir: {os.getcwd()}")
+    logger.info(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Check DNS
+    check_dns('xnhau.sh')
+
+    # Method 1: Requests without proxy, Referer Google
+    logger.info("--- Method 1: Requests without proxy, Referer Google ---")
+    response, item_count, html_file = method_requests_no_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 1! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 2: Requests with proxy, Referer Google
+    logger.info("--- Method 2: Requests with proxy, Referer Google ---")
+    response, item_count, html_file = method_requests_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 2! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 3: Selenium without proxy, Referer Google
+    logger.info("--- Method 3: Selenium without proxy, Referer Google ---")
+    response, item_count, html_file = method_selenium_no_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 3! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 4: Selenium with proxy, Referer Google
+    logger.info("--- Method 4: Selenium with proxy, Referer Google ---")
+    response, item_count, html_file = method_selenium_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 4! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    logger.error("All methods failed! No items found.")
+    logger.info("Next steps:")
+    logger.info("1. Check debug_referer_google.log for errors and response snippets.")
+    logger.info("2. Open HTML files (debug_response_*.html) in browser.")
+    logger.info("3. Try paid proxies (Bright Data, Smartproxy).")
+    logger.info("4. Extract cookies from local browser and add to requests.")
+    logger.info("5. Run with VPN from different country.")
+    return None, 0, None
+
+if __name__ == '__main__':
+    response, item_count, html_file = debug_all_methods(page_num=1)
+    if item_count > 0:
+        logger.info(f"Debug successful! Found {item_count} items in {html_file}")
+    else:
+        logger.error("Debug failed! Likely Cloudflare or IP block.")
