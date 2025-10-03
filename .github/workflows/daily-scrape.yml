@@ -31,6 +31,16 @@ jobs:
 
     - name: Run script
       run: python scrape_videos.py
+    - name: Debug Request
+      run: python debug_request.py
+    - name: Upload Debug Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-files
+        path: |
+          debug.log
+          debug_response.html
+          debug_error_response.html
 
     - name: Commit and push data.txt
       run: |
