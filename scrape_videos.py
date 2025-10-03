@@ -1,21 +1,26 @@
 import json
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
-import time
-import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
 import os
-from urllib.parse import urljoin
 import logging
-import re
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
+import socket
+import random
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('scraper.log', encoding='utf-8'),
+        logging.FileHandler('debug_all_methods.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -25,297 +30,356 @@ logger = logging.getLogger(__name__)
 try:
     with open('config.json', 'r') as f:
         config = json.load(f)
+    DOMAIN = config['DOMAIN']
+    HEADERS = config.get('HEADERS', {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://xnhau.sh/',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1'
+    })
 except Exception as e:
-    logger.error(f"Failed to load config.json: {str(e)}")
-    raise
+    logger.warning(f"Failed to load config.json: {str(e)}. Using defaults.")
+    DOMAIN = "https://xnhau.sh/clip-sex-moi/"
+    HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://xnhau.sh/',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1'
+    }
 
-DOMAIN = config['DOMAIN']
-NUM_THREADS = config['NUM_THREADS']
-LIMIT_PAGES_NO_NEW = config['LIMIT_PAGES_NO_NEW']
-DETAIL_DELAY = config['DETAIL_DELAY']
-DATA_TXT = config['DATA_TXT']
-TEMP_CSV = config['TEMP_CSV']
-FORCE_ALL_PAGES = config.get('FORCE_ALL_PAGES', False)
-GOOGLE_SHEETS_ENABLED = config.get('GOOGLE_SHEETS_ENABLED', True)
-SCOPE = config.get('SCOPE', [])
-CREDENTIALS_FILE = config.get('CREDENTIALS_FILE', 'credentials.json')
-SHEET_ID = config.get('SHEET_ID', '')
+# Proxy list (prioritize working proxy)
+PROXIES_LIST = [
+    '36.50.53.219:11995',  # Worked in previous debug
+    '157.250.203.234:8080',
+    '8.219.97.248:80',
+    '45.14.224.247:80',
+    '43.129.93.201:5000'
+]
 
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://xnhau.sh/'
-}
-
-all_video_data = []
-new_items = 0
-updated_items = 0
-stop_scraping = False
-total_pages_scraped = 0
-total_items = 0
-
-
-def convert_views(views_str):
-    """Convert views string to integer."""
-    views_str = views_str.lower().replace(',', '')
+def check_dns(hostname):
+    """Check DNS resolution."""
     try:
-        if 'k' in views_str:
-            return int(float(views_str.replace('k', '')) * 1000)
-        elif 'm' in views_str:
-            return int(float(views_str.replace('m', '')) * 1000000)
-        return int(views_str)
-    except:
-        return 0
+        ip = socket.gethostbyname(hostname)
+        logger.info(f"DNS resolved for {hostname}: {ip}")
+        return ip
+    except socket.gaierror as e:
+        logger.error(f"DNS resolution failed for {hostname}: {str(e)}")
+        return None
 
+def parse_response(response_text):
+    """Parse response to check items and issues."""
+    soup = BeautifulSoup(response_text, 'html.parser')
+    items = soup.find_all('div', class_='item ')
+    title = soup.title.string if soup.title else "No title"
+    issues = []
+    if 'cloudflare' in response_text.lower() or 'cf-ray' in response_text.lower():
+        issues.append("Cloudflare protection")
+    if 'login' in response_text.lower() or 'authentication' in response_text.lower():
+        issues.append("Login/Authentication required")
+    if 'captcha' in response_text.lower():
+        issues.append("CAPTCHA")
+    return items, title, issues
 
-def convert_relative_time(relative_time):
-    """Convert relative time to approximate datetime."""
-    now = datetime.now()
-    relative_time = relative_time.lower().strip()
-    if 'phút trước' in relative_time:
-        minutes = int(re.search(r'\d+', relative_time).group())
-        return (now - timedelta(minutes=minutes)).strftime('%Y-%m-%d %H:%M:%S')
-    elif 'giờ trước' in relative_time:
-        hours = int(re.search(r'\d+', relative_time).group())
-        return (now - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
-    elif 'ngày trước' in relative_time:
-        days = int(re.search(r'\d+', relative_time).group())
-        return (now - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-    elif 'tháng trước' in relative_time:
-        months = int(re.search(r'\d+', relative_time).group())
-        return (now - timedelta(days=months * 30)).strftime('%Y-%m-%d %H:%M:%S')  # Approximate
-    elif 'năm trước' in relative_time:
-        years = int(re.search(r'\d+', relative_time).group())
-        return (now - timedelta(days=years * 365)).strftime('%Y-%m-%d %H:%M:%S')  # Approximate
+def save_response(response_text, method, status, timestamp):
+    """Save response to file with clear naming."""
+    if status == 'success':
+        html_file = f"debug_response_success_{method}_{timestamp}.html"
+    elif status.isdigit():
+        html_file = f"debug_response_error_{method}_{status}_{timestamp}.html"
     else:
-        return relative_time  # Fallback if format unknown
+        html_file = f"debug_response_other_{method}_{status}_{timestamp}.html"
+    with open(html_file, 'w', encoding='utf-8') as f:
+        f.write(response_text)
+    logger.info(f"Saved {status.upper()} response to {html_file}")
+    return html_file
 
+def method_requests_no_proxy(url, retries=3, delay=1):
+    """Method 1: Requests without proxy."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    logger.info(f"Method 1: Requests without proxy to {url}")
+    logger.debug(f"Request headers: {HEADERS}")
+    session = requests.Session()  # For cookies persistence
 
-def scrape_page(page_num, retries=3):
-    """Scrape data from a single page."""
-    global total_pages_scraped, stop_scraping, total_items
     for attempt in range(retries):
         try:
-            url = DOMAIN if page_num == 1 else f"{DOMAIN}{page_num}/"
-            logger.info(f"Scraping URL: {url}")
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
+            logger.info(f"Attempt {attempt + 1}/{retries} (delay: {delay}s)")
+            time.sleep(delay)
+            response = session.get(url, headers=HEADERS, timeout=20, allow_redirects=True, verify=True)
+            logger.info(f"Status code: {response.status_code}")
+            logger.debug(f"Response headers: {dict(response.headers)}")
+            logger.debug(f"Response content-length: {len(response.text)}")
 
-            if page_num == 1:
-                with open('page1.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                logger.info("Saved HTML of page 1 to page1.html")
+            html_file = save_response(response.text, 'requests_no_proxy', str(response.status_code), timestamp)
+            items, title, issues = parse_response(response.text)
+            logger.info(f"Found {len(items)} items with class 'item '")
+            logger.info(f"Page title: {title[:100]}...")
+            for issue in issues:
+                logger.warning(f"Detected issue: {issue}")
 
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            if "Không tìm thấy gì" in soup.text:
-                stop_scraping = True
-                logger.info(f"Stop: 'Không tìm thấy gì' on page {page_num}")
-                return []
-
-            # Flexible selector: try 'div.item ' first, fallback to article or regex
-            items = soup.find_all('div', class_='item ')
-            if not items:
-                items = soup.find_all('article') or soup.find_all('div', class_=re.compile(r'(video|item|post)'))
-
-            if not items:
-                logger.info(f"No items found on page {page_num}")
-                if page_num > 1:
-                    stop_scraping = True
-                return []
-
-            page_data = []
-            for item in items:
-                try:
-                    a = item.find('a')
-                    if not a:
-                        continue
-
-                    link = urljoin(DOMAIN, a.get('href', ''))
-                    title = a.get('title', '') or a.text.strip()
-
-                    id_match = re.search(r'/video/(\d+)/', link)
-                    post_id = id_match.group(1) if id_match else None
-                    if not post_id:
-                        continue
-
-                    img = item.find('img', class_='thumb') or item.find('img')
-                    # Prioritize data-webp or data-src, fallback to src if not placeholder
-                    thumbnail = img.get('data-webp', '') or img.get('data-src', '') or img.get('src', '')
-                    if thumbnail.startswith('data:image/'):
-                        thumbnail = ''  # Ignore placeholder
-                    thumbnail = urljoin(DOMAIN, thumbnail) if thumbnail else ''
-
-                    preview = img.get('data-preview', '') if img and 'data-preview' in img.attrs else ''
-                    preview = urljoin(DOMAIN, preview) if preview else ''
-
-                    duration_elem = item.find('div', class_='duration') or item.find('span', class_='duration')
-                    duration = duration_elem.text.strip() if duration_elem else ''
-
-                    rating_div = item.find('div', class_='rating')
-                    rating = 0
-                    rating_type = ''
-                    if rating_div:
-                        rating_type = 'positive' if 'positive' in rating_div.get('class',
-                                                                                 []) else 'negative' if 'negative' in rating_div.get(
-                            'class', []) else ''
-                        circle = rating_div.find('circle', class_='e-c-progress')
-                        if circle:
-                            style = circle.get('style', '')
-                            array_match = re.search(r'stroke-dasharray:\s*([\d.]+)px', style)
-                            offset_match = re.search(r'stroke-dashoffset:([\d.]+)px', style)
-                            if array_match and offset_match:
-                                array = float(array_match.group(1))
-                                offset = float(offset_match.group(1))
-                                if array > 0:
-                                    rating = round(((array - offset) / array) * 100)
-
-                    added_elem = item.find('div', class_='added')
-                    relative_added = added_elem.find('em').text.strip() if added_elem and added_elem.find('em') else ''
-                    added = convert_relative_time(relative_added)
-
-                    views_elem = item.find('div', class_='views') or item.find('span', class_='views')
-                    views_str = views_elem.text.strip() if views_elem else '0'
-                    views = convert_views(views_str)
-
-                    video_data = {
-                        'page': page_num,
-                        'id': post_id,
-                        'title': title,
-                        'link': link,
-                        'thumbnail': thumbnail,
-                        'preview': preview,
-                        'duration': duration,
-                        'rating': rating,
-                        'rating_type': rating_type,
-                        'added': added,
-                        'views': views
-                    }
-                    page_data.append(video_data)
-
-                except Exception as e:
-                    logger.error(f"Error parsing item on page {page_num}: {str(e)}")
-                    continue
-
-            total_pages_scraped += 1
-            total_items += len(page_data)
-            if len(page_data) != 29:
-                logger.warning(f"Anomalous page {page_num}: Found {len(page_data)} items (expected 29)")
-            else:
-                logger.info(f"Page {page_num}: Found 29 items")
-            return page_data
+            return response, len(items), html_file
 
         except requests.exceptions.HTTPError as http_err:
-            if '404' in str(http_err) and page_num > 1:
-                stop_scraping = True
-                logger.info(f"Stop: 404 error on page {page_num}")
-                return []
-            logger.error(f"HTTP error on page {page_num}, attempt {attempt + 1}: {str(http_err)}")
+            error_msg = f"HTTP Error (code: {http_err.response.status_code if hasattr(http_err, 'response') else 'Unknown'}): {str(http_err)}"
+            logger.error(error_msg)
+            if hasattr(http_err, 'response'):
+                logger.error(f"Response body (first 1000 chars): {http_err.response.text[:1000]}")
+                html_file = save_response(http_err.response.text, 'requests_no_proxy', str(http_err.response.status_code), timestamp)
+            logger.debug(f"Full exception: {http_err}")
+            time.sleep(delay * 2)
+
+        except requests.exceptions.ConnectionError as conn_err:
+            logger.error(f"Connection Error: {str(conn_err)}")
+            html_file = save_response(str(conn_err), 'requests_no_proxy', 'connection', timestamp)
+            logger.debug(f"Full exception: {conn_err}")
+            time.sleep(delay * 2)
+
+        except requests.exceptions.Timeout as timeout_err:
+            logger.error(f"Timeout Error: {str(timeout_err)}")
+            html_file = save_response(str(timeout_err), 'requests_no_proxy', 'timeout', timestamp)
+            logger.debug(f"Full exception: {timeout_err}")
+            time.sleep(delay * 2)
+
+        except requests.exceptions.SSLError as ssl_err:
+            logger.error(f"SSL Error: {str(ssl_err)}")
+            html_file = save_response(str(ssl_err), 'requests_no_proxy', 'ssl', timestamp)
+            logger.debug(f"Full exception: {ssl_err}")
+            time.sleep(delay * 2)
+
         except requests.exceptions.RequestException as req_err:
-            logger.error(f"Request error on page {page_num}, attempt {attempt + 1}: {str(req_err)}")
-        time.sleep(2 ** attempt)
-    return []
+            logger.error(f"General Request Error: {str(req_err)}")
+            html_file = save_response(str(req_err), 'requests_no_proxy', 'request', timestamp)
+            logger.debug(f"Full exception: {req_err}")
+            time.sleep(delay * 2)
 
+    logger.error(f"All {retries} attempts failed for {url}")
+    return None, 0, None
 
-def load_existing_data():
-    """Load existing data from data.txt."""
-    if os.path.exists(DATA_TXT):
+def method_requests_proxy(url, retries=2, delay=2):
+    """Method 2: Requests with proxy."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    logger.info(f"Method 2: Requests with proxy to {url}")
+    random.shuffle(PROXIES_LIST)
+
+    for proxy in PROXIES_LIST[:3]:  # Try up to 3 proxies
+        proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
+        logger.info(f"Trying proxy: {proxy}")
+        session = requests.Session()
+
+        for attempt in range(retries):
+            try:
+                logger.info(f"Attempt {attempt + 1}/{retries} (delay: {delay}s)")
+                time.sleep(delay)
+                response = session.get(url, headers=HEADERS, proxies=proxies, timeout=20, allow_redirects=True, verify=True)
+                logger.info(f"Status code: {response.status_code}")
+                logger.debug(f"Response headers: {dict(response.headers)}")
+                logger.debug(f"Response content-length: {len(response.text)}")
+
+                html_file = save_response(response.text, 'requests_proxy', str(response.status_code), timestamp)
+                items, title, issues = parse_response(response.text)
+                logger.info(f"Found {len(items)} items with class 'item '")
+                logger.info(f"Page title: {title[:100]}...")
+                for issue in issues:
+                    logger.warning(f"Detected issue: {issue}")
+
+                return response, len(items), html_file
+
+            except requests.exceptions.ProxyError as proxy_err:
+                logger.error(f"Proxy Error: {str(proxy_err)}. Proxy {proxy} may be invalid.")
+                html_file = save_response(str(proxy_err), 'requests_proxy', 'proxy', timestamp)
+                logger.debug(f"Full exception: {proxy_err}")
+                break  # Skip to next proxy
+            except requests.exceptions.HTTPError as http_err:
+                error_msg = f"HTTP Error (code: {http_err.response.status_code if hasattr(http_err, 'response') else 'Unknown'}): {str(http_err)}"
+                logger.error(error_msg)
+                if hasattr(http_err, 'response'):
+                    logger.error(f"Response body (first 1000 chars): {http_err.response.text[:1000]}")
+                    html_file = save_response(http_err.response.text, 'requests_proxy', str(http_err.response.status_code), timestamp)
+                logger.debug(f"Full exception: {http_err}")
+                time.sleep(delay * 2)
+            except requests.exceptions.RequestException as req_err:
+                logger.error(f"Request Error: {str(req_err)}")
+                html_file = save_response(str(req_err), 'requests_proxy', 'request', timestamp)
+                logger.debug(f"Full exception: {req_err}")
+                time.sleep(delay * 2)
+
+    logger.error(f"All proxies failed for {url}")
+    return None, 0, None
+
+def method_selenium_no_proxy(url, retries=2, delay=5):
+    """Method 3: Selenium without proxy."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    logger.info(f"Method 3: Selenium without proxy to {url}")
+
+    for attempt in range(retries):
+        driver = None
         try:
-            with open(DATA_TXT, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return []
-    return []
+            logger.info(f"Attempt {attempt + 1}/{retries} (delay: {delay}s)")
+            time.sleep(delay)
 
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument(f"--user-agent={HEADERS['User-Agent']}")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
 
-def save_data(data):
-    """Save data to data.txt and optionally Google Sheets."""
-    try:
-        sorted_data = sorted(data, key=lambda x: (x['page'], -int(x['id'])))
-        with open(DATA_TXT, 'w', encoding='utf-8') as f:
-            json.dump(sorted_data, f, ensure_ascii=False, indent=2)
+            driver = webdriver.Chrome(service=webdriver.chrome.service.Service(ChromeDriverManager().install()), options=chrome_options)
+            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        df = pd.DataFrame(sorted_data)
-        if not df.empty:
-            df['id'] = pd.to_numeric(df['id'], errors='coerce')
-            df = df.sort_values(by=['page', 'id'], ascending=[True, False])
-            df.to_csv(TEMP_CSV, index=False, encoding='utf-8')
+            driver.get(url)
+            wait = WebDriverWait(driver, 30)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(5)  # Wait for JS
 
-            if GOOGLE_SHEETS_ENABLED and os.path.exists(CREDENTIALS_FILE):
-                try:
-                    from google.oauth2.service_account import Credentials
-                    import gspread
-                    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPE)
-                    client = gspread.authorize(creds)
-                    sheet = client.open_by_key(SHEET_ID).sheet1
-                    sheet.clear()
-                    sheet.update([df.columns.values.tolist()] + df.values.tolist())
-                    logger.info("Updated Google Sheets successfully")
-                except Exception as e:
-                    logger.error(f"Error updating Google Sheets: {str(e)}")
-            else:
-                logger.info("Skipped Google Sheets update: credentials.json not found or disabled")
+            page_source = driver.page_source
+            html_file = save_response(page_source, 'selenium_no_proxy', 'success', timestamp)
+            items, title, issues = parse_response(page_source)
+            logger.info(f"Found {len(items)} items with class 'item '")
+            logger.info(f"Page title: {title[:100]}...")
+            for issue in issues:
+                logger.warning(f"Detected issue: {issue}")
 
-    except Exception as e:
-        logger.error(f"Error saving data: {str(e)}")
+            return page_source, len(items), html_file
 
+        except (TimeoutException, WebDriverException) as e:
+            logger.error(f"Selenium Error: {str(e)}")
+            html_file = save_response(str(e), 'selenium_no_proxy', 'selenium', timestamp)
+            logger.debug(f"Full exception: {e}")
+            time.sleep(delay * 2)
+        except Exception as e:
+            logger.error(f"Unexpected Error: {str(e)}")
+            html_file = save_response(str(e), 'selenium_no_proxy', 'unexpected', timestamp)
+            logger.debug(f"Full exception: {e}")
+            time.sleep(delay * 2)
+        finally:
+            if driver:
+                driver.quit()
 
-def main():
-    """Main function."""
-    global all_video_data, stop_scraping, new_items, updated_items, total_items
-    logger.info("Starting scraper")
-    existing_data = load_existing_data()
-    existing_dict = {item['id']: item for item in existing_data}
-    max_pages = 10000
-    batch_size = 50
+    logger.error(f"All {retries} attempts failed for {url}")
+    return None, 0, None
 
-    logger.info(
-        f"Config: NUM_THREADS={NUM_THREADS}, LIMIT_PAGES_NO_NEW={LIMIT_PAGES_NO_NEW}, FORCE_ALL_PAGES={FORCE_ALL_PAGES}")
-    logger.info("Scraping page 1")
-    all_video_data = []
-    stop_scraping = False
-    page1_data = scrape_page(1)
-    all_video_data.extend(page1_data)
+def method_selenium_proxy(url, retries=2, delay=5):
+    """Method 4: Selenium with proxy."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    logger.info(f"Method 4: Selenium with proxy to {url}")
+    random.shuffle(PROXIES_LIST)
 
-    has_new_posts = any(item['id'] not in existing_dict for item in page1_data)
-    pages_to_scrape = max_pages if FORCE_ALL_PAGES or has_new_posts else LIMIT_PAGES_NO_NEW
-    logger.info(
-        f"Mode: {'Scraping all pages' if FORCE_ALL_PAGES or has_new_posts else f'Scraping first {LIMIT_PAGES_NO_NEW} pages'} (Total: {pages_to_scrape} pages)")
+    for proxy in PROXIES_LIST[:3]:
+        logger.info(f"Trying proxy: {proxy}")
+        for attempt in range(retries):
+            driver = None
+            try:
+                logger.info(f"Attempt {attempt + 1}/{retries} (delay: {delay}s)")
+                time.sleep(delay)
 
-    new_items += sum(1 for item in page1_data if item['id'] not in existing_dict)
-    updated_items += sum(1 for item in page1_data if item['id'] in existing_dict)
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument(f"--user-agent={HEADERS['User-Agent']}")
+                chrome_options.add_argument(f"--proxy-server=http://{proxy}")
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
 
-    page_num = 2
-    while page_num <= pages_to_scrape and not stop_scraping:
-        start_page = page_num
-        end_page = min(page_num + batch_size - 1, pages_to_scrape)
-        logger.info(
-            f"Processing batch from page {start_page} to {end_page} (Progress: {total_pages_scraped}/{pages_to_scrape} pages, {total_items} items so far)")
+                driver = webdriver.Chrome(service=webdriver.chrome.service.Service(ChromeDriverManager().install()), options=chrome_options)
+                driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-            futures = [executor.submit(scrape_page, i) for i in range(start_page, end_page + 1)]
-            for future in futures:
-                page_data = future.result()
-                all_video_data.extend(page_data)
-                new_items += sum(1 for item in page_data if item['id'] not in existing_dict)
-                updated_items += sum(1 for item in page_data if item['id'] in existing_dict)
+                driver.get(url)
+                wait = WebDriverWait(driver, 30)
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                time.sleep(5)
 
-        logger.info(
-            f"Batch complete: {start_page} to {end_page}, {total_pages_scraped} pages scraped, {total_items} items collected")
-        page_num += batch_size
+                page_source = driver.page_source
+                html_file = save_response(page_source, 'selenium_proxy', 'success', timestamp)
+                items, title, issues = parse_response(page_source)
+                logger.info(f"Found {len(items)} items with class 'item '")
+                logger.info(f"Page title: {title[:100]}...")
+                for issue in issues:
+                    logger.warning(f"Detected issue: {issue}")
 
-    logger.info(
-        f"Scraping complete: {total_pages_scraped} pages scraped, {total_items} items collected, {new_items} new items, {updated_items} updated items")
+                return page_source, len(items), html_file
 
-    for item in all_video_data:
-        existing_dict[item['id']] = item
-    unique_data = list(existing_dict.values())
-    save_data(unique_data)
+            except (TimeoutException, WebDriverException) as e:
+                logger.error(f"Selenium Error: {str(e)}")
+                html_file = save_response(str(e), 'selenium_proxy', 'selenium', timestamp)
+                logger.debug(f"Full exception: {e}")
+                time.sleep(delay * 2)
+            except Exception as e:
+                logger.error(f"Unexpected Error: {str(e)}")
+                html_file = save_response(str(e), 'selenium_proxy', 'unexpected', timestamp)
+                logger.debug(f"Full exception: {e}")
+            finally:
+                if driver:
+                    driver.quit()
 
+    logger.error(f"All proxies failed for {url}")
+    return None, 0, None
+
+def debug_all_methods(page_num=1):
+    """Test all methods to scrape page."""
+    url = DOMAIN if page_num == 1 else f"{DOMAIN}{page_num}/"
+    logger.info(f"=== DEBUGGING PAGE {page_num}: {url} ===")
+    logger.info(f"Environment: Python {os.sys.version}, OS: {os.name}, Working dir: {os.getcwd()}")
+    logger.info(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Check DNS
+    check_dns('xnhau.sh')
+
+    # Method 1: Requests without proxy
+    logger.info("--- Method 1: Requests without proxy ---")
+    response, item_count, html_file = method_requests_no_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 1! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 2: Requests with proxy
+    logger.info("--- Method 2: Requests with proxy ---")
+    response, item_count, html_file = method_requests_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 2! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 3: Selenium without proxy
+    logger.info("--- Method 3: Selenium without proxy ---")
+    response, item_count, html_file = method_selenium_no_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 3! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    # Method 4: Selenium with proxy
+    logger.info("--- Method 4: Selenium with proxy ---")
+    response, item_count, html_file = method_selenium_proxy(url)
+    if item_count > 0:
+        logger.info(f"SUCCESS with Method 4! Found {item_count} items. HTML: {html_file}")
+        return response, item_count, html_file
+
+    logger.error("All methods failed! No items found.")
+    logger.info("Next steps:")
+    logger.info("1. Check debug_all_methods.log for errors and response snippets.")
+    logger.info("2. Open HTML files (debug_response_*.html) in browser.")
+    logger.info("3. Try paid proxies (Bright Data, Smartproxy).")
+    logger.info("4. Use undetected-chromedriver for Selenium.")
+    logger.info("5. Run with VPN from different country.")
+    return None, 0, None
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        logger.error(f"Main function error: {str(e)}")
+    response, item_count, html_file = debug_all_methods(page_num=1)
+    if item_count > 0:
+        logger.info(f"Debug successful! Found {item_count} items in {html_file}")
+    else:
+        logger.error("Debug failed! Likely Cloudflare or IP block.")
