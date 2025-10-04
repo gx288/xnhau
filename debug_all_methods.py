@@ -3,16 +3,11 @@ from bs4 import BeautifulSoup
 
 # URL and headers
 url = "https://xnhau.sh/clip-sex-moi/"
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer": "https://xnhau.sh/",
-}
+
 
 try:
     # Make request
-    response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+    response = requests.get(url, timeout=10, allow_redirects=True)
     print(f"Status code: {response.status_code}")
     print(f"Redirect history: {[r.url for r in response.history]}")
     
