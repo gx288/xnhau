@@ -3,4 +3,5 @@ beautifulsoup4>=4.11.0
 pandas>=2.0.0
 gspread>=5.7.0
 google-auth>=2.15.0
+cloudscraper
 lxml>=4.9.0
