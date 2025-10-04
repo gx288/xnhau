@@ -18,7 +18,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('debug_referer_google.log', encoding='utf-8'),
+        logging.FileHandler('debug_restore.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -33,16 +33,13 @@ try:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://www.google.com/',  # Simulate coming from Google
+        'Referer': 'https://xnhau.sh/',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-User': '?1'
+        'DNT': '1'
     })
+    COOKIES = config.get('COOKIES', {})  # Add cookies from browser if available
 except Exception as e:
     logger.warning(f"Failed to load config.json: {str(e)}. Using defaults.")
     DOMAIN = "https://xnhau.sh/clip-sex-moi/"
@@ -50,18 +47,15 @@ except Exception as e:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://www.google.com/',
+        'Referer': 'https://xnhau.sh/',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-User': '?1'
+        'DNT': '1'
     }
+    COOKIES = {}
 
-# Proxy list (prioritize working proxy)
+# Proxy list
 PROXIES_LIST = [
     '36.50.53.219:11995',  # Worked previously
     '157.250.203.234:8080',
@@ -107,18 +101,14 @@ def save_response(response_text, method, status, timestamp):
     return html_file
 
 def method_requests_no_proxy(url, retries=3, delay=1):
-    """Method 1: Requests without proxy, Referer Google."""
+    """Method 1: Simple requests (like original code) with cookies."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    logger.info(f"Method 1: Requests without proxy, Referer Google to {url}")
+    logger.info(f"Method 1: Simple requests with cookies to {url}")
     logger.debug(f"Request headers: {HEADERS}")
+    logger.debug(f"Request cookies: {COOKIES}")
     session = requests.Session()
-
-    # Simulate Google search visit
-    try:
-        session.get('https://www.google.com/', headers=HEADERS, timeout=10)
-        logger.info("Simulated visit to Google for cookies")
-    except Exception as e:
-        logger.warning(f"Failed to visit Google: {str(e)}")
+    for k, v in COOKIES.items():
+        session.cookies.set(k, v, domain='xnhau.sh')
 
     for attempt in range(retries):
         try:
@@ -129,7 +119,7 @@ def method_requests_no_proxy(url, retries=3, delay=1):
             logger.debug(f"Response headers: {dict(response.headers)}")
             logger.debug(f"Response content-length: {len(response.text)}")
 
-            html_file = save_response(response.text, 'requests_no_proxy_referer_google', str(response.status_code), timestamp)
+            html_file = save_response(response.text, 'requests_no_proxy', str(response.status_code), timestamp)
             items, title, issues = parse_response(response.text)
             logger.info(f"Found {len(items)} items with class 'item '")
             logger.info(f"Page title: {title[:100]}...")
@@ -143,13 +133,13 @@ def method_requests_no_proxy(url, retries=3, delay=1):
             logger.error(error_msg)
             if hasattr(http_err, 'response'):
                 logger.error(f"Response body (first 1000 chars): {http_err.response.text[:1000]}")
-                html_file = save_response(http_err.response.text, 'requests_no_proxy_referer_google', str(http_err.response.status_code), timestamp)
+                html_file = save_response(http_err.response.text, 'requests_no_proxy', str(http_err.response.status_code), timestamp)
             logger.debug(f"Full exception: {http_err}")
             time.sleep(delay * 2)
 
         except requests.exceptions.RequestException as req_err:
             logger.error(f"Request Error: {str(req_err)}")
-            html_file = save_response(str(req_err), 'requests_no_proxy_referer_google', 'request', timestamp)
+            html_file = save_response(str(req_err), 'requests_no_proxy', 'request', timestamp)
             logger.debug(f"Full exception: {req_err}")
             time.sleep(delay * 2)
 
@@ -157,22 +147,17 @@ def method_requests_no_proxy(url, retries=3, delay=1):
     return None, 0, None
 
 def method_requests_proxy(url, retries=2, delay=2):
-    """Method 2: Requests with proxy, Referer Google."""
+    """Method 2: Requests with proxy."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    logger.info(f"Method 2: Requests with proxy, Referer Google to {url}")
+    logger.info(f"Method 2: Requests with proxy to {url}")
     random.shuffle(PROXIES_LIST)
 
     for proxy in PROXIES_LIST:
         proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
         logger.info(f"Trying proxy: {proxy}")
         session = requests.Session()
-
-        # Simulate Google visit
-        try:
-            session.get('https://www.google.com/', headers=HEADERS, proxies=proxies, timeout=10)
-            logger.info("Simulated visit to Google for cookies")
-        except Exception as e:
-            logger.warning(f"Failed to visit Google with proxy {proxy}: {str(e)}")
+        for k, v in COOKIES.items():
+            session.cookies.set(k, v, domain='xnhau.sh')
 
         for attempt in range(retries):
             try:
@@ -183,7 +168,7 @@ def method_requests_proxy(url, retries=2, delay=2):
                 logger.debug(f"Response headers: {dict(response.headers)}")
                 logger.debug(f"Response content-length: {len(response.text)}")
 
-                html_file = save_response(response.text, 'requests_proxy_referer_google', str(response.status_code), timestamp)
+                html_file = save_response(response.text, 'requests_proxy', str(response.status_code), timestamp)
                 items, title, issues = parse_response(response.text)
                 logger.info(f"Found {len(items)} items with class 'item '")
                 logger.info(f"Page title: {title[:100]}...")
@@ -194,12 +179,12 @@ def method_requests_proxy(url, retries=2, delay=2):
 
             except requests.exceptions.ProxyError as proxy_err:
                 logger.error(f"Proxy Error: {str(proxy_err)}. Proxy {proxy} may be invalid.")
-                html_file = save_response(str(proxy_err), 'requests_proxy_referer_google', 'proxy', timestamp)
+                html_file = save_response(str(proxy_err), 'requests_proxy', 'proxy', timestamp)
                 logger.debug(f"Full exception: {proxy_err}")
                 break
             except requests.exceptions.RequestException as req_err:
                 logger.error(f"Request Error: {str(req_err)}")
-                html_file = save_response(str(req_err), 'requests_proxy_referer_google', 'request', timestamp)
+                html_file = save_response(str(req_err), 'requests_proxy', 'request', timestamp)
                 logger.debug(f"Full exception: {req_err}")
                 time.sleep(delay * 2)
 
@@ -207,9 +192,9 @@ def method_requests_proxy(url, retries=2, delay=2):
     return None, 0, None
 
 def method_selenium_no_proxy(url, retries=2, delay=5):
-    """Method 3: Selenium without proxy, Referer Google."""
+    """Method 3: Selenium without proxy."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    logger.info(f"Method 3: Selenium without proxy, Referer Google to {url}")
+    logger.info(f"Method 3: Selenium without proxy to {url}")
 
     for attempt in range(retries):
         driver = None
@@ -224,7 +209,6 @@ def method_selenium_no_proxy(url, retries=2, delay=5):
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
             chrome_options.add_argument(f"--user-agent={HEADERS['User-Agent']}")
-            chrome_options.add_argument(f"--referer={HEADERS['Referer']}")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -232,10 +216,11 @@ def method_selenium_no_proxy(url, retries=2, delay=5):
             driver = Chrome(options=chrome_options)
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-            # Simulate Google visit
-            driver.get('https://www.google.com/')
-            time.sleep(2)
-            logger.info("Simulated visit to Google for cookies")
+            # Set cookies
+            driver.get(DOMAIN)  # Load domain to set cookies
+            for k, v in COOKIES.items():
+                driver.add_cookie({'name': k, 'value': v, 'domain': 'xnhau.sh'})
+            logger.info("Set cookies for Selenium")
 
             driver.get(url)
             wait = WebDriverWait(driver, 30)
@@ -243,7 +228,7 @@ def method_selenium_no_proxy(url, retries=2, delay=5):
             time.sleep(5)
 
             page_source = driver.page_source
-            html_file = save_response(page_source, 'selenium_no_proxy_referer_google', 'success', timestamp)
+            html_file = save_response(page_source, 'selenium_no_proxy', 'success', timestamp)
             items, title, issues = parse_response(page_source)
             logger.info(f"Found {len(items)} items with class 'item '")
             logger.info(f"Page title: {title[:100]}...")
@@ -254,12 +239,12 @@ def method_selenium_no_proxy(url, retries=2, delay=5):
 
         except (TimeoutException, WebDriverException) as e:
             logger.error(f"Selenium Error: {str(e)}")
-            html_file = save_response(str(e), 'selenium_no_proxy_referer_google', 'selenium', timestamp)
+            html_file = save_response(str(e), 'selenium_no_proxy', 'selenium', timestamp)
             logger.debug(f"Full exception: {e}")
             time.sleep(delay * 2)
         except Exception as e:
             logger.error(f"Unexpected Error: {str(e)}")
-            html_file = save_response(str(e), 'selenium_no_proxy_referer_google', 'unexpected', timestamp)
+            html_file = save_response(str(e), 'selenium_no_proxy', 'unexpected', timestamp)
             logger.debug(f"Full exception: {e}")
         finally:
             if driver:
@@ -269,9 +254,9 @@ def method_selenium_no_proxy(url, retries=2, delay=5):
     return None, 0, None
 
 def method_selenium_proxy(url, retries=2, delay=5):
-    """Method 4: Selenium with proxy, Referer Google."""
+    """Method 4: Selenium with proxy."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    logger.info(f"Method 4: Selenium with proxy, Referer Google to {url}")
+    logger.info(f"Method 4: Selenium with proxy to {url}")
     random.shuffle(PROXIES_LIST)
 
     for proxy in PROXIES_LIST:
@@ -290,7 +275,6 @@ def method_selenium_proxy(url, retries=2, delay=5):
                 chrome_options.add_argument("--window-size=1920,1080")
                 chrome_options.add_argument(f"--user-agent={HEADERS['User-Agent']}")
                 chrome_options.add_argument(f"--proxy-server=http://{proxy}")
-                chrome_options.add_argument(f"--referer={HEADERS['Referer']}")
                 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -298,10 +282,11 @@ def method_selenium_proxy(url, retries=2, delay=5):
                 driver = Chrome(options=chrome_options)
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-                # Simulate Google visit
-                driver.get('https://www.google.com/')
-                time.sleep(2)
-                logger.info("Simulated visit to Google for cookies")
+                # Set cookies
+                driver.get(DOMAIN)
+                for k, v in COOKIES.items():
+                    driver.add_cookie({'name': k, 'value': v, 'domain': 'xnhau.sh'})
+                logger.info("Set cookies for Selenium")
 
                 driver.get(url)
                 wait = WebDriverWait(driver, 30)
@@ -309,7 +294,7 @@ def method_selenium_proxy(url, retries=2, delay=5):
                 time.sleep(5)
 
                 page_source = driver.page_source
-                html_file = save_response(page_source, 'selenium_proxy_referer_google', 'success', timestamp)
+                html_file = save_response(page_source, 'selenium_proxy', 'success', timestamp)
                 items, title, issues = parse_response(page_source)
                 logger.info(f"Found {len(items)} items with class 'item '")
                 logger.info(f"Page title: {title[:100]}...")
@@ -320,12 +305,12 @@ def method_selenium_proxy(url, retries=2, delay=5):
 
             except (TimeoutException, WebDriverException) as e:
                 logger.error(f"Selenium Error: {str(e)}")
-                html_file = save_response(str(e), 'selenium_proxy_referer_google', 'selenium', timestamp)
+                html_file = save_response(str(e), 'selenium_proxy', 'selenium', timestamp)
                 logger.debug(f"Full exception: {e}")
                 time.sleep(delay * 2)
             except Exception as e:
                 logger.error(f"Unexpected Error: {str(e)}")
-                html_file = save_response(str(e), 'selenium_proxy_referer_google', 'unexpected', timestamp)
+                html_file = save_response(str(e), 'selenium_proxy', 'unexpected', timestamp)
                 logger.debug(f"Full exception: {e}")
             finally:
                 if driver:
@@ -335,7 +320,7 @@ def method_selenium_proxy(url, retries=2, delay=5):
     return None, 0, None
 
 def debug_all_methods(page_num=1):
-    """Test all methods with Referer Google."""
+    """Test all methods to restore original success."""
     url = DOMAIN if page_num == 1 else f"{DOMAIN}{page_num}/"
     logger.info(f"=== DEBUGGING PAGE {page_num}: {url} ===")
     logger.info(f"Environment: Python {os.sys.version}, OS: {os.name}, Working dir: {os.getcwd()}")
@@ -344,29 +329,29 @@ def debug_all_methods(page_num=1):
     # Check DNS
     check_dns('xnhau.sh')
 
-    # Method 1: Requests without proxy, Referer Google
-    logger.info("--- Method 1: Requests without proxy, Referer Google ---")
+    # Method 1: Simple requests with cookies
+    logger.info("--- Method 1: Simple requests with cookies ---")
     response, item_count, html_file = method_requests_no_proxy(url)
     if item_count > 0:
         logger.info(f"SUCCESS with Method 1! Found {item_count} items. HTML: {html_file}")
         return response, item_count, html_file
 
-    # Method 2: Requests with proxy, Referer Google
-    logger.info("--- Method 2: Requests with proxy, Referer Google ---")
+    # Method 2: Requests with proxy
+    logger.info("--- Method 2: Requests with proxy ---")
     response, item_count, html_file = method_requests_proxy(url)
     if item_count > 0:
         logger.info(f"SUCCESS with Method 2! Found {item_count} items. HTML: {html_file}")
         return response, item_count, html_file
 
-    # Method 3: Selenium without proxy, Referer Google
-    logger.info("--- Method 3: Selenium without proxy, Referer Google ---")
+    # Method 3: Selenium without proxy
+    logger.info("--- Method 3: Selenium without proxy ---")
     response, item_count, html_file = method_selenium_no_proxy(url)
     if item_count > 0:
         logger.info(f"SUCCESS with Method 3! Found {item_count} items. HTML: {html_file}")
         return response, item_count, html_file
 
-    # Method 4: Selenium with proxy, Referer Google
-    logger.info("--- Method 4: Selenium with proxy, Referer Google ---")
+    # Method 4: Selenium with proxy
+    logger.info("--- Method 4: Selenium with proxy ---")
     response, item_count, html_file = method_selenium_proxy(url)
     if item_count > 0:
         logger.info(f"SUCCESS with Method 4! Found {item_count} items. HTML: {html_file}")
@@ -374,11 +359,11 @@ def debug_all_methods(page_num=1):
 
     logger.error("All methods failed! No items found.")
     logger.info("Next steps:")
-    logger.info("1. Check debug_referer_google.log for errors and response snippets.")
+    logger.info("1. Check debug_restore.log for errors and response snippets.")
     logger.info("2. Open HTML files (debug_response_*.html) in browser.")
-    logger.info("3. Try paid proxies (Bright Data, Smartproxy).")
-    logger.info("4. Extract cookies from local browser and add to requests.")
-    logger.info("5. Run with VPN from different country.")
+    logger.info("3. Add cookies from local browser to config.json.")
+    logger.info("4. Try paid proxies (Bright Data, Smartproxy).")
+    logger.info("5. Run with VPN from Vietnam.")
     return None, 0, None
 
 if __name__ == '__main__':
